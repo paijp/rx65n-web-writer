@@ -1,0 +1,245 @@
+# Build the sample firmware with upstream GCC, and put it with the web page on
+# GitHub Pages so it can be written from a browser.
+#
+# There is no packaged GNU RX for any distribution and no prebuilt Linux
+# toolchain to download, so this builds one: binutils and a C-only gcc with
+# libgcc, which is all the firmware needs - it is built -nostartfiles and calls
+# no libc. That takes about half an hour the first time and is then cached, so
+# an ordinary firmware change builds in a minute.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild_toolchain:
+        description: 'Ignore the cached toolchain and build it again'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  BINUTILS: '2.43'
+  GCC: '16.1.0'
+  NEWLIB: '4.4.0.20231231'
+  PREFIX: /opt/rx-elf
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restore and save are separate on purpose. actions/cache saves in a post
+      # step that is skipped when the job fails, so a firmware build error threw
+      # away a half-hour toolchain build the first time this ran. The save below
+      # runs whatever happens.
+      - name: Restore the toolchain
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/rx-elf
+          # The key carries both versions, so bumping either rebuilds.
+          key: rx-elf-binutils${{ env.BINUTILS }}-gcc${{ env.GCC }}-newlib${{ env.NEWLIB }}
+
+      - name: Prerequisites
+        if: steps.toolchain-cache.outputs.cache-hit != 'true' || inputs.rebuild_toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgmp-dev libmpfr-dev libmpc-dev texinfo bison flex
+
+      - name: Build binutils, gcc and newlib for rx-elf
+        if: steps.toolchain-cache.outputs.cache-hit != 'true' || inputs.rebuild_toolchain
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$PREFIX"
+          sudo chown "$(id -u)" "$PREFIX"
+          mkdir -p ~/src && cd ~/src
+
+          curl -fsSLO "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS.tar.xz"
+          curl -fsSLO "https://ftp.gnu.org/gnu/gcc/gcc-$GCC/gcc-$GCC.tar.xz"
+          curl -fsSLO "https://sourceware.org/pub/newlib/newlib-$NEWLIB.tar.gz"
+          tar xf "binutils-$BINUTILS.tar.xz"
+          tar xf "gcc-$GCC.tar.xz"
+          tar xf "newlib-$NEWLIB.tar.gz"
+
+          mkdir -p build-binutils && cd build-binutils
+          "../binutils-$BINUTILS/configure" \
+            --target=rx-elf --prefix="$PREFIX" \
+            --disable-nls --disable-werror --with-sysroot
+          make -j"$(nproc)"
+          make install
+          cd ..
+
+          export PATH="$PREFIX/bin:$PATH"
+
+          # Newlib is here for its headers, not its code: the firmware is built
+          # -nostartfiles and calls no libc function, but it includes stdint.h,
+          # and a gcc built --without-headers has no libc stdint.h to offer. The
+          # alternative was to compile the firmware -ffreestanding so gcc serves
+          # its own; a complete toolchain was preferred, because it leaves how
+          # the image is built identical to the local GNURX one rather than
+          # changing it to suit CI.
+          #
+          # Hence the usual three-stage order: the compiler, then newlib with
+          # it, then libgcc against newlib's headers.
+          mkdir -p build-gcc && cd build-gcc
+          "../gcc-$GCC/configure" \
+            --target=rx-elf --prefix="$PREFIX" \
+            --enable-languages=c --with-newlib \
+            --disable-nls --disable-shared --disable-threads \
+            --disable-libssp --disable-libgomp --disable-libquadmath \
+            --disable-libatomic --disable-decimal-float --disable-libffi
+          make -j"$(nproc)" all-gcc
+          make install-gcc
+          cd ..
+
+          mkdir -p build-newlib && cd build-newlib
+          "../newlib-$NEWLIB/configure" --target=rx-elf --prefix="$PREFIX"
+          make -j"$(nproc)"
+          make install
+          cd ..
+
+          cd build-gcc
+          make -j"$(nproc)" all-target-libgcc
+          make install-target-libgcc
+
+      - name: Save the toolchain
+        if: always() && steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/rx-elf
+          key: rx-elf-binutils${{ env.BINUTILS }}-gcc${{ env.GCC }}-newlib${{ env.NEWLIB }}
+
+      - name: Show the toolchain
+        run: |
+          # GITHUB_PATH only takes effect in later steps, so this one also sets
+          # PATH for itself - the make call below needs the compiler on it.
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$PREFIX/bin:$PATH"
+          rx-elf-gcc --version
+          # Which -mcpu names this build understands, as annotations: the step
+          # log itself is served from storage an API-only client cannot read,
+          # and this is the question that has now cost two runs.
+          rx-elf-gcc --help=target \
+            | grep -iE 'mcpu|march|known.*(cpu|arch)|valid arguments' \
+            | head -12 \
+            | while IFS= read -r l; do echo "::notice::target: $l"; done
+          for c in rx64m rxv2 rx600 rx610 rx200 rx100 rxv3; do
+            if rx-elf-gcc -mcpu=$c -E -x c /dev/null >/dev/null 2>&1; then
+              echo "::notice::-mcpu=$c accepted"
+            fi
+          done
+          echo "::notice::Makefile picks CPU=$(make -C firmware -s print-cpu)"
+
+      # generate/ is e2 studio's startup for this chip, fetched from the MiniWin
+      # EnvisionDemo1 project rather than vendored: those generated files carry
+      # Renesas' own notice (Renesas products only). See firmware/fetch-startup.sh.
+      - name: Fetch the startup files
+        working-directory: firmware
+        run: bash fetch-startup.sh
+
+      - name: Build the samples
+        working-directory: firmware
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          build () {
+            # Echo the compiler's complaints as annotations as well as to the
+            # log: a log is served from storage that an API-only client cannot
+            # reach, and annotations are readable over the API.
+            if ! make "$@" 2>&1 | tee -a build.log; then
+              grep -iE "error|warning:|no such file|cannot find" build.log \
+                | head -20 \
+                | while IFS= read -r l; do echo "::error::$l"; done
+              return 1
+            fi
+          }
+          # The flood build is the one to point a serial monitor at: numbered
+          # lines back to back, so a gap in the sequence is visible as a gap.
+          make clean
+          build FLOOD=1 BAUD=115200
+          mv sertest.mot out/sertest-flood-115200.mot
+          rx-elf-size sertest.elf
+          # And the echo build, which exercises both directions.
+          make clean
+          build BAUD=115200
+          mv sertest.mot out/sertest-echo-115200.mot
+          ls -l out
+
+      # The touch-panel demo: a real application rather than a test pattern,
+      # whose own log comes back out of the cable that programmed it. Its port
+      # is fetched from paijp/smallest-touchpanel-ui (public) rather than
+      # vendored, so it stays that project's to change.
+      #
+      # Best-effort on purpose: it is a much larger body of code than sertest
+      # and this toolchain is not the GNURX it was written against, so a failure
+      # here must not stop the samples that do build from being published.
+      - name: Build the touch-panel demo
+        id: lcd
+        continue-on-error: true
+        working-directory: firmware
+        run: |
+          set -uo pipefail
+          bash fetch-lcdtp.sh
+          # Built with -g: GCC 12 to 15 for rx crash generating CFI for this
+          # port's functions at -O0 -g, and 16.1 is the first that does not.
+          # The .mot is identical with or without it.
+          if make sample1.mot 2>&1 | tee -a build.log; then
+            mv sample1.mot out/sample1-lcd-115200.mot
+            rx-elf-size sample1.elf
+          else
+            grep -iE "error" build.log | head -15 \
+              | while IFS= read -r l; do echo "::warning::sample1: $l"; done
+            exit 1
+          fi
+
+      # The site: the page, its one-file offline copy, and the samples with
+      # a list the page reads (samples/index.json).
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p site/samples
+          python3 web/make-offline.py
+          cp web/index.html web/app.js web/rx65n-web-writer.html site/
+          cp firmware/out/*.mot site/samples/
+          python3 - <<'PY'
+          import json, os
+          titles = {
+              "sertest-flood-115200.mot": "sertest flood: numbered lines as fast as the line goes (115200 bps)",
+              "sertest-echo-115200.mot": "sertest echo: sends back what you type (115200 bps)",
+              "sample1-lcd-115200.mot": "sample1: touch-panel UI on the LCD, logs each touch (115200 bps)",
+          }
+          files = sorted(f for f in os.listdir("site/samples") if f.endswith(".mot"))
+          json.dump([{"file": f, "title": titles.get(f, f)} for f in files],
+                    open("site/samples/index.json", "w"), ensure_ascii=False, indent=1)
+          PY
+          cp NOTICE site/NOTICE.txt
+          ls -lR site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  # Deploying needs Pages enabled with "GitHub Actions" as the source
+  # (Settings > Pages); set the repository variable DEPLOY_PAGES=true then.
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PAGES == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

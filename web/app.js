@@ -1,0 +1,715 @@
+// rx65n-web-writer: write an RX65N board through its on-board E2 Lite from a
+// browser tab, run it, and watch (and type to) its serial port.
+//
+// NOT official Renesas software, and not certified, warranted or supported by
+// Renesas Electronics. The probe's communication method is from independent
+// investigation. See README.md.
+//
+// The E2 Lite is reached with WebUSB (Chrome / Edge; tested on Android).
+// Two modes, one page:
+//   standalone: open the page (no token): connect, pick a sample or a .mot,
+//     write it, run it, send text, watch and save the log.
+//   relay: opened as .../#t=<token> from a server (server.py + rx65nctl):
+//     the manual controls are hidden; the page polls for jobs (run / flash /
+//     hold) and uploads the log and what it did, so whoever runs rx65nctl
+//     (e.g. Claude) can drive the board on the user's desk.
+(function () {
+	"use strict";
+
+	// The on-board E2 Lite: one vendor-class interface with two bulk
+	// endpoints, 64-byte packets.
+	var VID = 0x045B, PID = 0x82A0, EP_OUT = 2, EP_IN = 1;
+
+	// --- token: from the fragment (never sent to the server), kept per tab ---
+	var T = null;
+	(function () {
+		var m = /[#&]t=([A-Za-z0-9_-]+)/.exec(location.hash);
+		try {
+			if (m) sessionStorage.setItem("rxw.t", m[1]);
+			T = m ? m[1] : sessionStorage.getItem("rxw.t");
+		} catch (e) { T = m ? m[1] : null; }
+		if (m) history.replaceState(null, "", location.pathname);
+	})();
+
+	var msg = document.getElementById("msg");
+	var app = document.getElementById("app");
+	app.innerHTML =
+		'<div class="row"><button id="conn" style="padding:10px 16px">ボードに接続</button></div>' +
+		'<p id="usb" style="margin:8px 0"></p>' +
+		// The manual controls are hidden in relay mode: the server drives the board.
+		'<div id="manual"' + (T ? ' hidden' : '') + '>' +
+		'<div class="row" id="samplerow" hidden><select id="sample"><option value="">サンプルを選ぶ…</option></select></div>' +
+		'<div class="row"><input type="file" id="file" accept=".mot,.srec,.s19,.s28,.s37,.txt"></div>' +
+		'<div class="row"><button id="write" disabled>書き込んで実行</button>' +
+		'<button id="run" disabled>リセットして実行</button>' +
+		'<button id="hold" disabled>リセットで停止</button></div>' +
+		'<div class="row"><input id="tx" placeholder="ボードへ送る文字列（Enter で改行付き送信）" style="flex:1;min-width:10em">' +
+		'<button id="send" disabled>送信</button></div>' +
+		'<div class="row"><button id="clear">ログ消去</button><button id="save">ログ保存</button></div></div>' +
+		'<pre id="log"></pre>' +
+		(T ? '<p id="tap" style="margin:8px 0;font-size:.9em;opacity:.8">画面をどこか一度タップすると、終了時などに振動でお知らせします。</p>' : '') +
+		'<pre id="ev" style="opacity:.75"></pre>' +
+		'<p class="note">本ソフトウェアはルネサス エレクトロニクスの公式ソフトウェアではなく、同社が認定、保証またはサポートするものではありません。' +
+		'This is not official Renesas Electronics software and is not certified, warranted or supported by Renesas Electronics.</p>';
+	function $(id) { return document.getElementById(id); }
+	var conn = $("conn"), usbP = $("usb"), logP = $("log"), evP = $("ev");
+	var btnWrite = $("write"), btnRun = $("run"), btnHold = $("hold"), btnSend = $("send");
+	msg.textContent = T ? "サーバーに接続しています…" : "RX65N ボードにブラウザから書き込みます（Chrome / Edge）。";
+	if (T) document.addEventListener("pointerdown", function () {
+		var t = $("tap");
+		if (t) t.textContent = "振動通知が有効になりました。";
+	}, { once: true });
+
+	function api(path, body) {
+		var o = { headers: { "X-Token": T }, cache: "no-store" };
+		if (body !== undefined) { o.method = "POST"; o.body = body; }
+		return fetch("api/" + path, o);
+	}
+	function report(ev) {
+		evP.textContent = (new Date().toLocaleTimeString() + " " + JSON.stringify(ev) + "\n" + evP.textContent).slice(0, 4000);
+		if (T) return api("event", JSON.stringify(ev)).catch(function () {});
+		return Promise.resolve();
+	}
+	var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+	var enc = new TextEncoder();
+
+	// --- the log: shown, kept for saving, and (relay mode) uploaded ---
+	var logAll = [], logSize = 0, outq = [], flushing = null, dec = new TextDecoder();
+	function show(text) {
+		var stick = logP.scrollTop + logP.clientHeight >= logP.scrollHeight - 4;
+		logP.textContent = (logP.textContent + text).slice(-8000);
+		if (stick) logP.scrollTop = logP.scrollHeight;
+	}
+	function received(b) {
+		logAll.push(b); logSize += b.length;
+		while (logSize > 4 << 20) logSize -= logAll.shift().length;
+		if (T) outq.push(b);
+		show(dec.decode(b, { stream: true }));
+	}
+	function mark(text) {
+		var b = enc.encode("\n=== " + text + " ===\n");
+		logAll.push(b); logSize += b.length;
+		if (T) outq.push(b);
+		show("\n=== " + text + " ===\n");
+	}
+	// Serial bytes go up in batches, not one POST per read. Nothing in here
+	// may throw: it is also called from the error path of a job.
+	function flush() {
+		if (!T || !outq.length || flushing) return flushing || Promise.resolve();
+		var n = 0; outq.forEach(function (c) { n += c.length; });
+		var buf = new Uint8Array(n), o = 0;
+		outq.forEach(function (c) { buf.set(c, o); o += c.length; });
+		outq = [];
+		flushing = api("log", buf).catch(function () {}).then(function () { flushing = null; });
+		return flushing;
+	}
+	if (T) setInterval(flush, 700);
+
+	// =====================================================================
+	// The probe link.
+	//
+	// Every request to the E2 Lite is one bulk OUT transfer starting with the
+	// byte 0x28 and a command byte, followed by that command's arguments; the
+	// reply comes back on bulk IN and starts with the same two bytes. All
+	// multi-byte numbers are big-endian.
+	// =====================================================================
+	var dev = null;
+	function hex(b, n) {
+		var a = Array.prototype.slice.call(b, 0, n || b.length);
+		return a.map(function (x) { return ("0" + x.toString(16)).slice(-2); }).join(" ");
+	}
+	function unhex(s) {
+		return new Uint8Array(s ? s.split(" ").map(function (x) { return parseInt(x, 16); }) : []);
+	}
+	function be32(v) { return new Uint8Array([v >>> 24 & 255, v >>> 16 & 255, v >>> 8 & 255, v & 255]); }
+	function cat(a, b) { var o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; }
+
+	// One request and its reply. WebUSB reads have no timeout and cannot be
+	// cancelled, so a reply is never read "just in case"; instead a reply
+	// whose header is not ours is taken to be a stale one left by an earlier
+	// session that was cut off, and skipped.
+	async function command(cmd, payload, replyMax) {
+		payload = payload || new Uint8Array(0);
+		var pkt = new Uint8Array(payload.length + 2);
+		pkt[0] = 0x28; pkt[1] = cmd; pkt.set(payload, 2);
+		await dev.transferOut(EP_OUT, pkt);
+		for (var i = 0; i < 8; i++) {
+			var r = await dev.transferIn(EP_IN, Math.max(4096, replyMax || 0));
+			var b = new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength);
+			if (b.length >= 2 && b[0] === 0x28 && b[1] === cmd) return b.slice(2);
+			report({ what: "stale-reply", cmd: cmd, got: hex(b, 8), len: b.length });
+		}
+		throw new Error("no reply to 0x" + cmd.toString(16));
+	}
+
+	// Bringing the probe up. The values are the ones that work on the
+	// RX65N Envision Kit; each step is described by what it does.
+	var INIT = [
+		[0x06, "00 01 00 00", "open a session"],
+		[0x1D, "00", "select mode 0"],
+		[0x6B, "00 00 13 88", "operation timeout: 5000 ms"],
+		[0x00, "", "read the probe's status"],
+		[0xD0, "00 00 00 00 00 01 00 00 00 01 ff fe 80 06", "version handshake"],
+		[0x1D, "02", "select mode 2"],
+		[0x00, "", "read the probe's status"],
+		[0x66, "07 40 08 40 03 40 05 40 07 28 20 00 08 39 40", "assign the probe's pins to the RX interface"],
+		[0x00, "", "read the probe's status"],
+		[0x65, "", "read the probe's capabilities"],
+		[0x61, "00 01", "power the target on"],
+		[0x62, "00 00 01 39", "probe UART divisor 313 (9600 bps)"],
+		[0x6C, "", "read the timeout settings"]];
+	async function start() { for (var i = 0; i < INIT.length; i++) await command(INIT[i][0], unhex(INIT[i][1])); }
+
+	// 0x62 sets the probe's own UART rate as a divisor of 3 MHz, so only
+	// rates on that grid exist: 115200 is really 3e6/26 = 115385.
+	var DIVISOR = { 9600: 0x139, 115200: 26, 125000: 24, 1000000: 3 };
+
+	// 0x64 drives the target's reset and mode pins: "04" holds reset,
+	// "00" releases everything, so the MCU starts the program in flash.
+	async function assertReset() { await command(0x64, unhex("0f ff 04 00 00 00")); }
+	async function releaseReset() { await command(0x64, unhex("0f ff 00 00 00 00")); }
+
+	// 0x68 is the UART pass-through: send tx to the MCU's serial port, then
+	// read up to n bytes back. Arguments: tx length (2 bytes), n (2 bytes),
+	// tx. The reply holds exactly n bytes and then a 4-byte status: 0 means
+	// all n arrived; 03 58 00 00 means the wait (set with 0x6B) ran out, and
+	// the bytes that did arrive come first, padded with 0xFF.
+	async function exchangeRaw(tx, n) {
+		var body = new Uint8Array(4 + tx.length);
+		body[0] = tx.length >> 8; body[1] = tx.length & 255; body[2] = n >> 8; body[3] = n & 255;
+		body.set(tx, 4);
+		var r = await command(0x68, body, n + 64);
+		var st = r.slice(r.length - 4);
+		return { data: r.slice(0, r.length - 4), st: st, ok: !(st[0] | st[1] | st[2] | st[3]),
+			timeout: st[0] === 3 && st[1] === 0x58 && st[2] === 0 && st[3] === 0 };
+	}
+	// For the log: set the wait with 0x6B, then read and drop the padding
+	// (exact for text, which never contains 0xFF).
+	async function exchange(tx, n, waitMs) {
+		await command(0x6B, be32(waitMs));
+		var r = await exchangeRaw(tx, n);
+		if (!r.ok) { var e = r.data.length; while (e > 0 && r.data[e - 1] === 0xFF) e--; r.data = r.data.slice(0, e); }
+		return r;
+	}
+	async function transfer(tx, n) {
+		var r = await exchangeRaw(tx, n);
+		if (!r.ok) throw new Error("0x68 status " + hex(r.st));
+		return r.data;
+	}
+
+	// Only one USB conversation at a time: the monitor loop, a job and the
+	// buttons all go through this.
+	var linkTail = Promise.resolve();
+	function withLink(f) {
+		var p = linkTail.then(f);
+		linkTail = p.catch(function () {});
+		return p;
+	}
+
+	// =====================================================================
+	// Writing the flash: the RX MCU's own serial boot mode (documented by
+	// the MCU's hardware manual), carried over the pass-through above.
+	// =====================================================================
+	function parseSrec(text) {
+		var chunks = [], lineno = 0;
+		text.split(/\r?\n/).forEach(function (raw) {
+			lineno++;
+			var line = raw.trim();
+			if (!line) return;
+			if (line[0] !== "S") throw new Error("not an S-record file (line " + lineno + ")");
+			var al = { "1": 2, "2": 3, "3": 4 }[line[1]];
+			if (!al) return;    // S0 header, S5 count, S7-S9 start address
+			var count = parseInt(line.substr(2, 2), 16);
+			if (line.length < 4 + count * 2) throw new Error("S-record too short at line " + lineno);
+			var body = unhex(line.substr(4, count * 2).replace(/(..)/g, "$1 ").trim());
+			var sum = count; body.forEach(function (x) { sum += x; });
+			if ((sum & 255) !== 255) throw new Error("S-record checksum mismatch at line " + lineno);
+			var addr = 0; for (var i = 0; i < al; i++) addr = addr * 256 + body[i];
+			var data = body.slice(al, body.length - 1);
+			var last = chunks[chunks.length - 1];
+			if (last && last.addr + last.len === addr) { last.parts.push(data); last.len += data.length; }
+			else chunks.push({ addr: addr, len: data.length, parts: [data] });
+		});
+		if (!chunks.length) throw new Error("no data records in the file");
+		return chunks.map(function (c) {
+			var d = new Uint8Array(c.len), o = 0;
+			c.parts.forEach(function (p) { d.set(p, o); o += p.length; });
+			return { addr: c.addr, data: d };
+		});
+	}
+	// Boot-mode frames: SOH (01) or SOD (81), length (2 bytes, command byte
+	// included), command, data, checksum (two's complement of the sum from
+	// the length on), ETX (03) or ETB (17) when more data follows.
+	function frame(cmd, data, head, last) {
+		data = data || new Uint8Array(0);
+		var len = data.length + 1, out = new Uint8Array(data.length + 6);
+		out[0] = head === undefined ? 0x01 : head; out[1] = len >> 8; out[2] = len & 255; out[3] = cmd;
+		out.set(data, 4);
+		var sum = 0; for (var i = 1; i < out.length - 2; i++) sum += out[i];
+		out[out.length - 2] = (-sum) & 255;
+		out[out.length - 1] = last === false ? 0x17 : 0x03;
+		return out;
+	}
+	function parseFrame(f) {
+		if (f.length < 6 || f[0] !== 0x81) throw new Error("bad boot frame " + hex(f, 16));
+		var n = (f[1] << 8 | f[2]) + 5;
+		if (f.length !== n) throw new Error("boot frame length mismatch " + hex(f, 16));
+		var sum = 0; for (var i = 1; i < f.length - 1; i++) sum += f[i];
+		if (sum & 255) throw new Error("boot frame checksum " + hex(f, 16));
+		return { cmd: f[3], data: f.slice(4, f.length - 2) };
+	}
+	async function readRest(head) {
+		if (head.length < 6) throw new Error("no response from MCU (" + hex(head) + ")");
+		var total = (head[1] << 8 | head[2]) + 5;
+		return total <= head.length ? head : cat(head, await transfer(new Uint8Array(0), total - head.length));
+	}
+	// A command, and its acknowledgement; bit 7 set in the reply's command
+	// byte means the MCU refused it, with the reason in the first data byte.
+	async function bsend(cmd, data) {
+		var f = await readRest(await transfer(frame(cmd, data), 6));
+		var r = parseFrame(f);
+		if (r.cmd === (cmd | 0x80)) throw new Error("boot command 0x" + cmd.toString(16) + " rejected, error 0x" + (r.data[0] || 0).toString(16));
+		return f;
+	}
+	// A command that returns data: sending the acknowledgement back asks
+	// for the data frame.
+	async function bexchange(cmd, data) {
+		var ack = await bsend(cmd, data);
+		return parseFrame(await readRest(await transfer(ack, 6))).data;
+	}
+	function rd32(b, o) { return ((b[o] << 24) >>> 0) + (b[o + 1] << 16) + (b[o + 2] << 8) + b[o + 3]; }
+
+	// The Envision Kit's crystal and the system clock the boot program is
+	// told to run at; another board may need other values.
+	var INPUT_HZ = 16000000, SYSTEM_HZ = 120000000;
+
+	async function bootConnect(bps) {
+		// 0x61 switches the target's power: off and on again, so the MCU
+		// samples the mode pins the probe holds and starts in boot mode.
+		await command(0x61, unhex("00 00")); await sleep(500);
+		await command(0x61, unhex("00 01")); await sleep(200);
+		await command(0x62, be32(DIVISOR[9600])); await sleep(200);
+		await command(0x6B, be32(300));
+		// Boot mode's own start-up: zeros, then 55 until the MCU answers C2.
+		var synced = false;
+		for (var i = 0; i < 30 && !synced; i++) {
+			await exchangeRaw(new Uint8Array(10), 1);
+			var r = await exchangeRaw(new Uint8Array([0x55]), 1);
+			if (r.ok && r.data[0] === 0xC2) synced = true;
+		}
+		if (!synced) throw new Error("no answer from the MCU's boot mode (no 0xC2)");
+		await command(0x6B, be32(5000));
+		await bexchange(0x38);                                  // device inquiry
+		await bsend(0x36, new Uint8Array([1]));                 // clock mode
+		await bexchange(0x32, cat(be32(INPUT_HZ), be32(SYSTEM_HZ)));   // clocks
+		await bsend(0x34, be32(bps));                           // MCU's bit rate...
+		await command(0x62, be32(DIVISOR[bps]));                // ...and the probe's
+		await bsend(0x00);                                      // status
+		await bexchange(0x2C);                                  // ID check method
+		var id = new Uint8Array(16); id.fill(0xFF);
+		await bsend(0x30, id);                                  // ID code: none set
+		var areas = [];
+		for (var k = 0; k < 8; k++) {                           // memory areas
+			var p;
+			try { p = await bexchange(0x54, new Uint8Array([k])); } catch (e) { break; }
+			if (p.length < 17) break;
+			var a = { kind: p[0], start: rd32(p, 1), end: rd32(p, 5), block: rd32(p, 9), unit: rd32(p, 13) };
+			if (!a.start && !a.end) break;
+			areas.push(a);
+		}
+		return areas;
+	}
+	// Area kinds as the MCU reports them: 00 code flash, 20 data flash,
+	// 30 option-setting memory (the "config area").
+	var WRITABLE = { 0x00: "code flash", 0x20: "data flash" };
+	function areaFor(areas, addr) {
+		var a = areas.filter(function (x) { return addr >= x.start && addr <= x.end; })[0];
+		if (!a) throw new Error("address " + addr.toString(16) + " is not in any memory area of this MCU");
+		return a;
+	}
+	// Group the image by area, pad to the write unit, and refuse anything
+	// aimed at option-setting memory: a wrong value there can change how the
+	// MCU starts or lock it, so this page never writes it. Records there that
+	// are all FF (the unprogrammed value, which some builds emit) are dropped.
+	function plan(areas, chunks) {
+		var by = new Map(), skipped = 0;
+		chunks.forEach(function (c) {
+			if (!c.data.length) return;
+			var a = areaFor(areas, c.addr);
+			if (c.addr + c.data.length - 1 > a.end) throw new Error("data crosses a memory area boundary at " + c.addr.toString(16));
+			if (!WRITABLE[a.kind]) {
+				if (c.data.every(function (x) { return x === 0xFF; })) { skipped += c.data.length; return; }
+				throw new Error("the image writes to option-setting memory (" + c.addr.toString(16) +
+					"); this page does not write it. Remove those sections (e.g. objcopy -R .ofs1 ... -R .ofs7).");
+			}
+			if (!by.has(a)) by.set(a, []);
+			by.get(a).push(c);
+		});
+		if (skipped) report({ what: "ofs-skipped", bytes: skipped });
+		// Within an area, records closer than one erase block share a run;
+		// a wider gap starts a new one, so a large area with code at both ends
+		// is not written (and erased) in between.
+		var runs = [];
+		by.forEach(function (g, a) {
+			g.sort(function (x, y) { return x.addr - y.addr; });
+			var groups = [];
+			g.forEach(function (c) {
+				var last = groups[groups.length - 1];
+				if (last && c.addr - last.high < a.block) {
+					last.list.push(c); last.high = Math.max(last.high, c.addr + c.data.length);
+				} else groups.push({ low: c.addr, high: c.addr + c.data.length, list: [c] });
+			});
+			groups.forEach(function (gr) {
+				var low = gr.low - (gr.low - a.start) % a.unit, high = gr.high;
+				var pad = (high - a.start) % a.unit; if (pad) high += a.unit - pad;
+				var img = new Uint8Array(high - low); img.fill(0xFF);
+				gr.list.forEach(function (c) { img.set(c.data, c.addr - low); });
+				runs.push({ addr: low, data: img, area: a });
+			});
+		});
+		if (!runs.length) throw new Error("nothing to write");
+		return runs.sort(function (x, y) { return x.addr - y.addr; });
+	}
+	async function eraseWrite(run, progress) {
+		var a = run.area, end = run.addr + run.data.length - 1;
+		await command(0x6B, be32(90000));          // erasing can take a while
+		var blocks = [];
+		for (var b = run.addr - (run.addr - a.start) % a.block; b <= end; b += a.block) blocks.push(b);
+		for (var i = 0; i < blocks.length; i++) {
+			await bsend(0x12, be32(blocks[i]));     // erase one block
+			progress("消去 " + (i + 1) + "/" + blocks.length);
+		}
+		await bsend(0x13, cat(be32(run.addr), be32(end)));   // write: range...
+		for (var sent = 0; sent < run.data.length;) {        // ...then the data
+			var part = run.data.slice(sent, sent + 1024), last = sent + part.length >= run.data.length;
+			var r = parseFrame(await readRest(await transfer(frame(0x13, part, 0x81, last), 6)));
+			if (r.cmd === 0x93) throw new Error("write refused at " + (run.addr + sent).toString(16));
+			sent += part.length;
+			progress("書き込み " + Math.round(sent * 100 / run.data.length) + "%");
+		}
+		return blocks.length;
+	}
+	async function verifyRun(run, progress) {
+		for (var off = 0; off < run.data.length;) {
+			var want = Math.min(1024, run.data.length - off), s = run.addr + off;
+			var ack = await bsend(0x15, cat(be32(s), be32(s + want - 1)));    // read back
+			var got = parseFrame(await readRest(await transfer(ack, 6))).data;
+			for (var i = 0; i < want; i++)
+				if (got[i] !== run.data[off + i])
+					throw new Error("verify mismatch at " + (s + i).toString(16));
+			off += want;
+			progress("照合 " + Math.round(off * 100 / run.data.length) + "%");
+		}
+	}
+
+	// =====================================================================
+	// What the buttons and jobs do. Each takes the link, so the monitor loop
+	// (below) pauses while they run.
+	// =====================================================================
+	var monitoring = false, monBps = 115200, txq = [];
+	function writeFlash(text, name, bps) {
+		var chunks = parseSrec(text);        // check the file before touching the board
+		return withLink(async function () {
+			monitoring = false;
+			var bytes = chunks.reduce(function (n, c) { return n + c.data.length; }, 0);
+			report({ what: "image", name: name, chunks: chunks.length, bytes: bytes });
+			usbP.textContent = "ブートモードに入ります…";
+			await start();
+			var areas = await bootConnect(bps);
+			var runs = plan(areas, chunks);
+			report({ what: "boot", areas: areas.map(function (a) {
+				return a.kind.toString(16) + ":" + a.start.toString(16) + "-" + a.end.toString(16) + "/" + a.block + "/" + a.unit; }),
+				runs: runs.map(function (x) { return x.addr.toString(16) + "+" + x.data.length; }) });
+			var t = Date.now();
+			for (var i = 0; i < runs.length; i++) {
+				var nb = await eraseWrite(runs[i], function (s) { usbP.textContent = s + " (" + (i + 1) + "/" + runs.length + ")"; });
+				report({ what: "written", addr: runs[i].addr.toString(16), bytes: runs[i].data.length, blocks: nb });
+			}
+			for (var j = 0; j < runs.length; j++)
+				await verifyRun(runs[j], function (s) { usbP.textContent = s + " (" + (j + 1) + "/" + runs.length + ")"; });
+			report({ what: "verified", ms: Date.now() - t });
+		});
+	}
+	// Reset and run what is in flash, then keep reading its output.
+	function runBoard(bps, label) {
+		return withLink(async function () {
+			monitoring = false;
+			if (!DIVISOR[bps]) throw new Error("unsupported bit rate " + bps);
+			await start();
+			await command(0x62, be32(DIVISOR[bps]));
+			// The probe buffers what arrives while nobody reads; drop what the
+			// previous program left so it does not look like this one's output.
+			for (var i = 0; i < 12; i++) {
+				var d = await exchange(new Uint8Array(0), 4096, 50);
+				if (!d.data.length && !d.ok) break;
+			}
+			mark(label || "run " + new Date().toISOString());
+			await assertReset();
+			await releaseReset();
+			monBps = bps; txq = [];
+			monitoring = true;
+		}).then(function () { monitorLoop(); });    // runs on; not awaited
+	}
+	function holdBoard() {
+		return withLink(async function () {
+			monitoring = false;
+			await start();
+			await assertReset();
+			mark("reset held " + new Date().toISOString());
+		});
+	}
+	// The serial monitor: poll the pass-through while the program runs.
+	// Anything typed rides on the next poll's 0x68.
+	var looping = false;
+	async function monitorLoop() {
+		if (looping) return;
+		looping = true;
+		try {
+			while (monitoring && dev) {
+				await withLink(async function () {
+					if (!monitoring || !dev) return;
+					var tx = txq.length ? txq.shift() : new Uint8Array(0);
+					var r = await exchange(tx, 256, 100);
+					if (tx.length) { mark("tx " + tx.length + " bytes"); report({ what: "tx", bytes: tx.length }); }
+					if (!r.ok && !r.timeout) report({ what: "rx-status", st: hex(r.st) });
+					if (r.data.length) received(r.data);
+				});
+			}
+		} catch (e) {
+			monitoring = false;
+			usbP.textContent = "ログの受信が止まりました: " + e;
+			report({ what: "monitor-failed", error: String(e) });
+		}
+		looping = false;
+	}
+
+	// --- connecting ---
+	function connected(how, pick) {
+		usbP.textContent = "接続しました: " + (dev.productName || "E2 Lite") + " (" + how + ")";
+		conn.textContent = "接続済み"; conn.disabled = true;
+		btnWrite.disabled = btnRun.disabled = btnHold.disabled = btnSend.disabled = false;
+		report({ what: "claimed", interface: pick, how: how, serial: dev.serialNumber });
+		if (T) poll();
+	}
+	function lost(why) {
+		if (!dev) return;
+		dev = null; monitoring = false;
+		usbP.textContent = "ボードが外れました" + (why ? " (" + why + ")" : "") + "。";
+		conn.textContent = "ボードに接続"; conn.disabled = false;
+		btnWrite.disabled = btnRun.disabled = btnHold.disabled = btnSend.disabled = true;
+		report({ what: "disconnected", why: why || "" });
+	}
+	async function openUsb(d, how) {
+		usbP.textContent = "接続中… (" + how + ")";
+		await d.open();
+		if (!d.configuration) await d.selectConfiguration(1);
+		var pick = null;
+		d.configuration.interfaces.forEach(function (i) {
+			var o = false, n = false;
+			i.alternate.endpoints.forEach(function (e) {
+				if (e.type !== "bulk") return;
+				if (e.direction === "out" && e.endpointNumber === EP_OUT) o = true;
+				if (e.direction === "in" && e.endpointNumber === EP_IN) n = true;
+			});
+			if (o && n && pick === null) pick = i.interfaceNumber;
+		});
+		if (pick === null) throw new Error("no interface with bulk endpoints 0x02 / 0x81");
+		await d.claimInterface(pick);
+		dev = d;
+		connected(how, pick);
+	}
+	function fail(e, what) {
+		usbP.textContent = "接続できません: " + e;
+		report({ what: what || "open-failed", error: String(e) });
+	}
+	conn.onclick = function () {
+		navigator.usb.requestDevice({ filters: [{ vendorId: VID, productId: PID }] })
+			.then(function (d) { return openUsb(d, "picked"); })
+			.catch(function (e) { fail(e, "pick-failed"); });
+	};
+
+	// --- standalone controls ---
+	var busy = false;
+	async function manual(f) {
+		if (busy || !dev) return;
+		busy = true; btnWrite.disabled = btnRun.disabled = btnHold.disabled = true;
+		try { await f(); } catch (e) { usbP.textContent = "失敗: " + e; report({ what: "manual-failed", error: String(e) }); }
+		busy = false; if (dev) btnWrite.disabled = btnRun.disabled = btnHold.disabled = false;
+	}
+	async function pickedImage() {
+		var f = $("file").files[0];
+		if (f) return { name: f.name, text: await f.text() };
+		var s = $("sample").value;
+		if (s) {
+			var r = await fetch("samples/" + encodeURIComponent(s), { cache: "no-store" });
+			if (!r.ok) throw new Error("could not fetch the sample " + s);
+			return { name: s, text: await r.text() };
+		}
+		return null;
+	}
+	$("sample").onchange = function () { if ($("sample").value) $("file").value = ""; };
+	$("file").onchange = function () { if ($("file").files[0]) $("sample").value = ""; };
+	btnWrite.onclick = function () {
+		manual(async function () {
+			var img = await pickedImage();
+			if (!img) { usbP.textContent = "サンプルを選ぶか、.mot ファイルを指定してください。"; return; }
+			await writeFlash(img.text, img.name, 115200);
+			await runBoard(115200, "write " + img.name + " " + new Date().toISOString());
+			usbP.textContent = "書き込んで実行しました: " + img.name;
+		});
+	};
+	btnRun.onclick = function () {
+		manual(async function () { await runBoard(115200); usbP.textContent = "実行中（ログを受信しています）"; });
+	};
+	btnHold.onclick = function () {
+		manual(async function () { await holdBoard(); usbP.textContent = "リセットで停止しました。"; });
+	};
+	btnSend.onclick = function () {
+		if (!dev) return;
+		if (!monitoring) { usbP.textContent = "送信は実行中のみできます（「リセットして実行」）。"; return; }
+		txq.push(enc.encode($("tx").value + "\n"));
+		$("tx").value = "";
+	};
+	$("tx").addEventListener("keydown", function (e) { if (e.key === "Enter") btnSend.onclick(); });
+	$("clear").onclick = function () { logP.textContent = ""; };
+	$("save").onclick = function () {
+		var a = document.createElement("a");
+		a.href = URL.createObjectURL(new Blob(logAll, { type: "application/octet-stream" }));
+		a.download = "rx65n-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log";
+		a.click();
+		setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+	};
+	// Samples: a list next to the page (samples/index.json), when hosted with one.
+	if (!T) fetch("samples/index.json", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; })
+		.then(function (list) {
+			if (!list || !list.length) return;
+			list.forEach(function (s) {
+				var o = document.createElement("option");
+				o.value = s.file; o.textContent = s.title || s.file;
+				$("sample").appendChild(o);
+			});
+			$("samplerow").hidden = false;
+		}).catch(function () {});
+
+	// --- relay mode: messages and jobs from the server ---
+	var closed = false, lastMsg = null, lastJob = null, startRev = null, busySince = 0, firstSeq = null, jobsRun = 0;
+	function poll() {
+		if (!T || closed) return;
+		api("poll").then(function (r) { return r.ok ? r.json() : null; }).then(function (c) {
+			if (!c) { msg.textContent = "このセッションは終了したか、期限が切れています。"; closed = true; return; }
+			var done = c.state !== "open";
+			if (firstSeq === null) firstSeq = c.seq || 0;
+			// "Please reload" (askreload) applies only to a page loaded before
+			// it was asked; seq is the server's counter, so no clocks compared.
+			if (c.reloadAsk && !done) {
+				if (firstSeq < c.reloadAsk.seq) { c.message = c.reloadAsk.text; c.attention = true; }
+				else {
+					var tapped = navigator.userActivation && navigator.userActivation.hasBeenActive;
+					c.message = tapped ? "リロードを確認しました。処理を待っています。"
+						: "リロードを確認しました。画面を一度タップしてください（振動通知が有効になります）。";
+					c.attention = false;
+				}
+			}
+			var key = (done ? "#" : c.attention ? "!" : "") + (c.message || "");
+			if (key !== lastMsg) {
+				lastMsg = key;
+				msg.textContent = c.message || "";
+				// Yellow: look at the server side (Claude). Green: finished.
+				var box = "color:#000;padding:12px;border-radius:6px;font-weight:bold;background:";
+				msg.style.cssText = done ? box + "#81c784" : c.attention ? box + "#ffd54f" : "";
+				document.title = (done ? "✓ " : c.attention ? "● " : "") + "rx65n-web-writer";
+				if ((done || c.attention) && navigator.vibrate) {
+					// Chrome ignores vibrate() until the page has been tapped once.
+					var ok = navigator.vibrate(done ? [400] : [200, 100, 200]);
+					report({ what: "vibrate", ok: ok, kind: done ? "close" : "wait",
+						activated: !!(navigator.userActivation && navigator.userActivation.hasBeenActive) });
+				}
+			}
+			// A job present when the page loads is not run, so a reload does
+			// not repeat the last one; "rev" makes open pages reload.
+			if (startRev === null) { startRev = c.rev || 0; lastJob = c.job ? c.job.id : null; }
+			else if ((c.rev || 0) !== startRev && (!busy || Date.now() - busySince > 120000)) { location.reload(); return; }
+			if (c.job && c.job.id !== lastJob && dev && !busy) {
+				lastJob = c.job.id;
+				runJob(c.job);
+			}
+			if (done) {
+				closed = true;
+				conn.disabled = true;
+				monitoring = false;
+			}
+		}).catch(function () {});
+	}
+
+	// job: { id, kind: "run" | "flash" | "hold", file, bps, seconds, tx, txDelayMs }
+	// The log keeps being read after a job ends, until the next one.
+	async function runJob(job) {
+		busy = true; busySince = Date.now();
+		if (jobsRun++ === 0 && navigator.vibrate) {
+			var vok = navigator.vibrate([80]);
+			report({ what: "vibrate", ok: vok, kind: "start",
+				activated: !!(navigator.userActivation && navigator.userActivation.hasBeenActive) });
+		}
+		var t0 = Date.now(), total0 = logSize;
+		try {
+			report({ what: "job-start", id: job.id, kind: job.kind });
+			var bps = job.bps || 115200, label = "job " + job.id + " " + job.kind + " " + new Date().toISOString();
+			if (job.kind === "flash") {
+				var r = await api("file/" + encodeURIComponent(job.file));
+				if (!r.ok) throw new Error("could not fetch " + job.file);
+				await writeFlash(await r.text(), job.file, bps);
+				total0 = logSize;
+				await runBoard(bps, label);
+			} else if (job.kind === "run") {
+				await runBoard(bps, label);
+			} else if (job.kind === "hold") {
+				await holdBoard();
+			} else throw new Error("unknown job kind " + job.kind);
+			total0 = logSize;
+			if (job.kind !== "hold") {
+				usbP.textContent = "実行中: ログを受信しています (" + (job.seconds || 10) + " 秒)";
+				var until = Date.now() + (job.seconds || 10) * 1000;
+				if (job.tx) {
+					await sleep(job.txDelayMs === undefined ? 1000 : job.txDelayMs);
+					txq.push(enc.encode(job.tx));
+				}
+				while (Date.now() < until && dev && monitoring) await sleep(100);
+			}
+			await flush();
+			report({ what: "job-done", id: job.id, bytes: logSize - total0, ms: Date.now() - t0 });
+			usbP.textContent = "完了: " + (logSize - total0) + " バイト受信";
+		} catch (e) {
+			await flush();
+			report({ what: "job-failed", id: job.id, error: String(e), ms: Date.now() - t0 });
+			usbP.textContent = "失敗: " + e;
+		}
+		busy = false;
+	}
+	if (T) {
+		setInterval(function () { if (!document.hidden) poll(); }, 1500);
+		setInterval(function () { if (document.hidden && !busy) poll(); }, 5000);
+		document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+		poll();
+	}
+
+	// --- start: reconnect to a board permitted earlier, without a prompt ---
+	// The user agent string is reduced (and Android Chrome in desktop-site
+	// mode says "Linux x86_64"), so ask for the real platform where offered.
+	(navigator.userAgentData && navigator.userAgentData.getHighEntropyValues
+		? navigator.userAgentData.getHighEntropyValues(["platform", "platformVersion", "model"]).catch(function () { return {}; })
+		: Promise.resolve({})).then(function (h) {
+		report({ what: "loaded", ua: navigator.userAgent, os: h.platform, osVersion: h.platformVersion, model: h.model,
+			webusb: !!navigator.usb });
+	});
+	if (!navigator.usb) {
+		usbP.textContent = "このブラウザは WebUSB に対応していません (Chrome か Edge を使ってください)。";
+		conn.disabled = true;
+		return;
+	}
+	navigator.usb.getDevices().then(function (ds) {
+		var d = ds.filter(function (x) { return x.vendorId === VID && x.productId === PID; })[0];
+		if (d) return openUsb(d, "remembered");
+		usbP.textContent = "「ボードに接続」を押して E2 Lite を選んでください。";
+	}).catch(function (e) { fail(e); });
+	navigator.usb.addEventListener("disconnect", function (e) { if (dev && e.device === dev) lost("unplugged"); });
+})();

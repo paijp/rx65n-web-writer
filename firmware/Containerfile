@@ -1,0 +1,33 @@
+# Build container for the RX65N test firmware.
+#
+# The GNU RX toolchain is not in the image. It is a free download from Renesas
+# but needs an account, so it cannot be fetched unattended, and it is not
+# redistributable - so extract it on the host and mount it in:
+#
+#   mkdir -p /opt/gcc-rx
+#   tar xzf gcc-14.2.0.202607-GNURX-ELF-linux.tar.gz -C /opt/gcc-rx
+#   podman build -t gcc-rx -f firmware/Containerfile firmware
+#   podman run --rm \
+#       -v /opt/gcc-rx/gcc-for-renesas-rx-linux:/opt/gcc-rx:ro,Z \
+#       -v "$PWD/firmware":/work:Z -w /work \
+#       gcc-rx make
+#
+# The toolchain binaries are x86_64, so this builds on x86_64 hosts. On ARM,
+# build binutils/gcc/newlib for rx-elf from source instead; see the README.
+
+FROM docker.io/library/debian:13
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        make \
+        python3 \
+        curl \
+        ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Where the mounted toolchain is expected. Nothing is installed here by the
+# image itself; the mount supplies it.
+ENV PATH=/opt/gcc-rx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /work
+CMD ["bash"]
