@@ -22,14 +22,14 @@ recover from. Option-setting memory is never written by either tool.
 Open the GitHub Pages site in Chrome (or Edge), connect the board with a USB
 cable (on Android, through USB OTG), and:
 
-1. 「ボードに接続」 and pick the E2 Lite. The browser remembers it, so later
+1. **Connect board** and pick the E2 Lite. The browser remembers it, so later
    visits connect by themselves.
 2. Pick a sample from the list, or a `.mot` file of your own, and
-   「書き込んで実行」: the page puts the MCU in boot mode, erases, writes,
+   **Write & run**: the page puts the MCU in boot mode, erases, writes,
    verifies, then resets it and shows its serial output (SCI1, 115200 bps).
 3. Type in the box to send text to the board (with a newline).
-   「リセットして実行」 restarts the program, 「リセットで停止」 holds it in
-   reset, 「ログ保存」 saves what was received.
+   **Reset & run** restarts the program, **Hold in reset** stops it, and
+   **Save log** saves what was received.
 
 Samples on the site, built from source by this repository's workflow:
 

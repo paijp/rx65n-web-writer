@@ -55,7 +55,7 @@ async function page(url) {
 	const p = await ctx.newPage();
 	p.on("pageerror", e => { console.log("page error: " + e); failed++; });
 	await p.goto(url);
-	await p.waitForFunction(() => document.getElementById("usb").textContent.includes("接続しました"), null, { timeout: 5000 });
+	await p.waitForFunction(() => document.getElementById("usb").textContent.includes("Connected"), null, { timeout: 5000 });
 	return p;
 }
 const text = (p, id) => p.evaluate(i => document.getElementById(i).textContent, id);
@@ -89,7 +89,7 @@ async function until(p, f, ms = 15000) { await p.waitForFunction(f, null, { time
 
 	await p.waitForFunction(() => !document.getElementById("hold").disabled);
 	await p.click("#hold");
-	await until(p, () => document.getElementById("usb").textContent.includes("停止"));
+	await until(p, () => document.getElementById("usb").textContent.includes("Held in reset"));
 	check(true, "hold in reset");
 }
 
@@ -106,8 +106,8 @@ async function until(p, f, ms = 15000) { await p.waitForFunction(f, null, { time
 	await new Promise(r => setTimeout(r, 800));
 	const p = await page(url);
 	check(!(await p.isVisible("#manual")), "relay mode hides the manual controls");
-	ctl("msg", "テスト中");
-	await until(p, () => document.getElementById("msg").textContent === "テスト中");
+	ctl("msg", "testing");
+	await until(p, () => document.getElementById("msg").textContent === "testing");
 	check(true, "message shown");
 	ctl("flash", path.join(tmp, "good.mot"), "3", "--tx", "ping\\r\\n");
 	const done = ctl("jobwait", "30");
@@ -118,10 +118,10 @@ async function until(p, f, ms = 15000) { await p.waitForFunction(f, null, { time
 	check(/job-done/.test(ctl("jobwait", "20")), "run job done");
 	ctl("hold");
 	check(/job-done/.test(ctl("jobwait", "20")), "hold job done");
-	ctl("wait", "見てください");
+	ctl("wait", "look here");
 	await until(p, () => document.title.startsWith("●"));
 	check(true, "wait: highlighted");
-	ctl("close", "完了");
+	ctl("close", "finished");
 	await until(p, () => document.title.startsWith("✓"));
 	check(true, "close: shown (green, ✓)");
 	srv.kill();

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -56,30 +56,30 @@
 	var msg = document.getElementById("msg");
 	var app = document.getElementById("app");
 	app.innerHTML =
-		'<div class="row"><button id="conn" style="padding:10px 16px">ボードに接続</button></div>' +
+		'<div class="row"><button id="conn" style="padding:10px 16px">Connect board</button></div>' +
 		'<p id="usb" style="margin:8px 0"></p>' +
 		// The manual controls are hidden in relay mode: the server drives the board.
 		'<div id="manual"' + (T ? ' hidden' : '') + '>' +
-		'<div class="row" id="samplerow" hidden><select id="sample"><option value="">サンプルを選ぶ…</option></select></div>' +
+		'<div class="row" id="samplerow" hidden><select id="sample"><option value="">Choose a sample…</option></select></div>' +
 		'<div class="row"><input type="file" id="file" accept=".mot,.srec,.s19,.s28,.s37,.txt"></div>' +
-		'<div class="row"><button id="write" disabled>書き込んで実行</button>' +
-		'<button id="run" disabled>リセットして実行</button>' +
-		'<button id="hold" disabled>リセットで停止</button></div>' +
-		'<div class="row"><input id="tx" placeholder="ボードへ送る文字列（Enter で改行付き送信）" style="flex:1;min-width:10em">' +
-		'<button id="send" disabled>送信</button></div>' +
-		'<div class="row"><button id="clear">ログ消去</button><button id="save">ログ保存</button></div></div>' +
+		'<div class="row"><button id="write" disabled>Write &amp; run</button>' +
+		'<button id="run" disabled>Reset &amp; run</button>' +
+		'<button id="hold" disabled>Hold in reset</button></div>' +
+		'<div class="row"><input id="tx" placeholder="Text to send to the board (Enter sends it with a newline)" style="flex:1;min-width:10em">' +
+		'<button id="send" disabled>Send</button></div>' +
+		'<div class="row"><button id="clear">Clear log</button><button id="save">Save log</button></div></div>' +
 		'<pre id="log"></pre>' +
-		(T ? '<p id="tap" style="margin:8px 0;font-size:.9em;opacity:.8">画面をどこか一度タップすると、終了時などに振動でお知らせします。</p>' : '') +
+		(T ? '<p id="tap" style="margin:8px 0;font-size:.9em;opacity:.8">Tap anywhere on the page once to get vibration alerts (when finished, etc.).</p>' : '') +
 		'<pre id="ev" style="opacity:.75"></pre>' +
 		'<p class="note">本ソフトウェアはルネサス エレクトロニクスの公式ソフトウェアではなく、同社が認定、保証またはサポートするものではありません。' +
 		'This is not official Renesas Electronics software and is not certified, warranted or supported by Renesas Electronics.</p>';
 	function $(id) { return document.getElementById(id); }
 	var conn = $("conn"), usbP = $("usb"), logP = $("log"), evP = $("ev");
 	var btnWrite = $("write"), btnRun = $("run"), btnHold = $("hold"), btnSend = $("send");
-	msg.textContent = T ? "サーバーに接続しています…" : "RX65N ボードにブラウザから書き込みます（Chrome / Edge）。";
+	msg.textContent = T ? "Connecting to the server…" : "Write an RX65N board from the browser (Chrome / Edge).";
 	if (T) document.addEventListener("pointerdown", function () {
 		var t = $("tap");
-		if (t) t.textContent = "振動通知が有効になりました。";
+		if (t) t.textContent = "Vibration alerts are on.";
 	}, { once: true });
 
 	function api(path, body) {
@@ -399,7 +399,7 @@
 		for (var b = run.addr - (run.addr - a.start) % a.block; b <= end; b += a.block) blocks.push(b);
 		for (var i = 0; i < blocks.length; i++) {
 			await bsend(0x12, be32(blocks[i]));     // erase one block
-			progress("消去 " + (i + 1) + "/" + blocks.length);
+			progress("Erasing " + (i + 1) + "/" + blocks.length);
 		}
 		await bsend(0x13, cat(be32(run.addr), be32(end)));   // write: range...
 		for (var sent = 0; sent < run.data.length;) {        // ...then the data
@@ -407,7 +407,7 @@
 			var r = parseFrame(await readRest(await transfer(frame(0x13, part, 0x81, last), 6)));
 			if (r.cmd === 0x93) throw new Error("write refused at " + (run.addr + sent).toString(16));
 			sent += part.length;
-			progress("書き込み " + Math.round(sent * 100 / run.data.length) + "%");
+			progress("Writing " + Math.round(sent * 100 / run.data.length) + "%");
 		}
 		return blocks.length;
 	}
@@ -420,7 +420,7 @@
 				if (got[i] !== run.data[off + i])
 					throw new Error("verify mismatch at " + (s + i).toString(16));
 			off += want;
-			progress("照合 " + Math.round(off * 100 / run.data.length) + "%");
+			progress("Verifying " + Math.round(off * 100 / run.data.length) + "%");
 		}
 	}
 
@@ -435,7 +435,7 @@
 			monitoring = false;
 			var bytes = chunks.reduce(function (n, c) { return n + c.data.length; }, 0);
 			report({ what: "image", name: name, chunks: chunks.length, bytes: bytes });
-			usbP.textContent = "ブートモードに入ります…";
+			usbP.textContent = "Entering boot mode…";
 			await start();
 			var areas = await bootConnect(bps);
 			var runs = plan(areas, chunks);
@@ -499,7 +499,7 @@
 			}
 		} catch (e) {
 			monitoring = false;
-			usbP.textContent = "ログの受信が止まりました: " + e;
+			usbP.textContent = "Log reading stopped: " + e;
 			report({ what: "monitor-failed", error: String(e) });
 		}
 		looping = false;
@@ -507,8 +507,8 @@
 
 	// --- connecting ---
 	function connected(how, pick) {
-		usbP.textContent = "接続しました: " + (dev.productName || "E2 Lite") + " (" + how + ")";
-		conn.textContent = "接続済み"; conn.disabled = true;
+		usbP.textContent = "Connected: " + (dev.productName || "E2 Lite") + " (" + how + ")";
+		conn.textContent = "Connected"; conn.disabled = true;
 		btnWrite.disabled = btnRun.disabled = btnHold.disabled = btnSend.disabled = false;
 		report({ what: "claimed", interface: pick, how: how, serial: dev.serialNumber });
 		if (T) poll();
@@ -516,13 +516,13 @@
 	function lost(why) {
 		if (!dev) return;
 		dev = null; monitoring = false;
-		usbP.textContent = "ボードが外れました" + (why ? " (" + why + ")" : "") + "。";
-		conn.textContent = "ボードに接続"; conn.disabled = false;
+		usbP.textContent = "Board disconnected" + (why ? " (" + why + ")" : "") + ".";
+		conn.textContent = "Connect board"; conn.disabled = false;
 		btnWrite.disabled = btnRun.disabled = btnHold.disabled = btnSend.disabled = true;
 		report({ what: "disconnected", why: why || "" });
 	}
 	async function openUsb(d, how) {
-		usbP.textContent = "接続中… (" + how + ")";
+		usbP.textContent = "Connecting… (" + how + ")";
 		await d.open();
 		if (!d.configuration) await d.selectConfiguration(1);
 		var pick = null;
@@ -541,7 +541,7 @@
 		connected(how, pick);
 	}
 	function fail(e, what) {
-		usbP.textContent = "接続できません: " + e;
+		usbP.textContent = "Cannot connect: " + e;
 		report({ what: what || "open-failed", error: String(e) });
 	}
 	conn.onclick = function () {
@@ -555,7 +555,7 @@
 	async function manual(f) {
 		if (busy || !dev) return;
 		busy = true; btnWrite.disabled = btnRun.disabled = btnHold.disabled = true;
-		try { await f(); } catch (e) { usbP.textContent = "失敗: " + e; report({ what: "manual-failed", error: String(e) }); }
+		try { await f(); } catch (e) { usbP.textContent = "Failed: " + e; report({ what: "manual-failed", error: String(e) }); }
 		busy = false; if (dev) btnWrite.disabled = btnRun.disabled = btnHold.disabled = false;
 	}
 	async function pickedImage() {
@@ -574,21 +574,21 @@
 	btnWrite.onclick = function () {
 		manual(async function () {
 			var img = await pickedImage();
-			if (!img) { usbP.textContent = "サンプルを選ぶか、.mot ファイルを指定してください。"; return; }
+			if (!img) { usbP.textContent = "Choose a sample or a .mot file."; return; }
 			await writeFlash(img.text, img.name, 115200);
 			await runBoard(115200, "write " + img.name + " " + new Date().toISOString());
-			usbP.textContent = "書き込んで実行しました: " + img.name;
+			usbP.textContent = "Written and running: " + img.name;
 		});
 	};
 	btnRun.onclick = function () {
-		manual(async function () { await runBoard(115200); usbP.textContent = "実行中（ログを受信しています）"; });
+		manual(async function () { await runBoard(115200); usbP.textContent = "Running (reading the log)"; });
 	};
 	btnHold.onclick = function () {
-		manual(async function () { await holdBoard(); usbP.textContent = "リセットで停止しました。"; });
+		manual(async function () { await holdBoard(); usbP.textContent = "Held in reset."; });
 	};
 	btnSend.onclick = function () {
 		if (!dev) return;
-		if (!monitoring) { usbP.textContent = "送信は実行中のみできます（「リセットして実行」）。"; return; }
+		if (!monitoring) { usbP.textContent = "Sending works only while running (Reset & run)."; return; }
 		txq.push(enc.encode($("tx").value + "\n"));
 		$("tx").value = "";
 	};
@@ -618,7 +618,7 @@
 	function poll() {
 		if (!T || closed) return;
 		api("poll").then(function (r) { return r.ok ? r.json() : null; }).then(function (c) {
-			if (!c) { msg.textContent = "このセッションは終了したか、期限が切れています。"; closed = true; return; }
+			if (!c) { msg.textContent = "This session has ended or expired."; closed = true; return; }
 			var done = c.state !== "open";
 			if (firstSeq === null) firstSeq = c.seq || 0;
 			// "Please reload" (askreload) applies only to a page loaded before
@@ -627,8 +627,8 @@
 				if (firstSeq < c.reloadAsk.seq) { c.message = c.reloadAsk.text; c.attention = true; }
 				else {
 					var tapped = navigator.userActivation && navigator.userActivation.hasBeenActive;
-					c.message = tapped ? "リロードを確認しました。処理を待っています。"
-						: "リロードを確認しました。画面を一度タップしてください（振動通知が有効になります）。";
+					c.message = tapped ? "Reloaded. Waiting for the next step."
+						: "Reloaded. Tap the page once (to turn vibration alerts back on).";
 					c.attention = false;
 				}
 			}
@@ -689,7 +689,7 @@
 			} else throw new Error("unknown job kind " + job.kind);
 			total0 = logSize;
 			if (job.kind !== "hold") {
-				usbP.textContent = "実行中: ログを受信しています (" + (job.seconds || 10) + " 秒)";
+				usbP.textContent = "Running: reading the log (" + (job.seconds || 10) + " s)";
 				var until = Date.now() + (job.seconds || 10) * 1000;
 				if (job.tx) {
 					await sleep(job.txDelayMs === undefined ? 1000 : job.txDelayMs);
@@ -699,11 +699,11 @@
 			}
 			await flush();
 			report({ what: "job-done", id: job.id, bytes: logSize - total0, ms: Date.now() - t0 });
-			usbP.textContent = "完了: " + (logSize - total0) + " バイト受信";
+			usbP.textContent = "Done: " + (logSize - total0) + " bytes received";
 		} catch (e) {
 			await flush();
 			report({ what: "job-failed", id: job.id, error: String(e), ms: Date.now() - t0 });
-			usbP.textContent = "失敗: " + e;
+			usbP.textContent = "Failed: " + e;
 		}
 		busy = false;
 	}
@@ -724,14 +724,14 @@
 			webusb: !!navigator.usb });
 	});
 	if (!navigator.usb) {
-		usbP.textContent = "このブラウザは WebUSB に対応していません (Chrome か Edge を使ってください)。";
+		usbP.textContent = "This browser has no WebUSB (use Chrome or Edge).";
 		conn.disabled = true;
 		return;
 	}
 	navigator.usb.getDevices().then(function (ds) {
 		var d = ds.filter(function (x) { return x.vendorId === VID && x.productId === PID; })[0];
 		if (d) return openUsb(d, "remembered");
-		usbP.textContent = "「ボードに接続」を押して E2 Lite を選んでください。";
+		usbP.textContent = "Press \"Connect board\" and choose the E2 Lite.";
 	}).catch(function (e) { fail(e); });
 	navigator.usb.addEventListener("disconnect", function (e) { if (dev && e.device === dev) lost("unplugged"); });
 })();
