@@ -124,6 +124,11 @@ async function until(p, f, ms = 15000) { await p.waitForFunction(f, null, { time
 	ctl("close", "finished");
 	await until(p, () => document.title.startsWith("✓"));
 	check(true, "close: shown (green, ✓)");
+	// A tab that kept a token from a session that no longer exists falls
+	// back to the standalone writer instead of waiting for jobs.
+	const q = await page("http://localhost:8766/rx65n/#t=" + "x".repeat(32));
+	await until(q, () => !document.getElementById("manual").hidden);
+	check(/ended/.test(await text(q, "msg")), "stale token: falls back to standalone");
 	srv.kill();
 }
 

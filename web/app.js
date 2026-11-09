@@ -580,7 +580,8 @@
 		setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
 	};
 	// Samples: a list next to the page (samples/index.json), when hosted with one.
-	if (!T) fetch("samples/index.json", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; })
+	function loadSamples() {
+		fetch("samples/index.json", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; })
 		.then(function (list) {
 			if (!list || !list.length) return;
 			list.forEach(function (s) {
@@ -590,13 +591,29 @@
 			});
 			$("samplerow").hidden = false;
 		}).catch(function () {});
+	}
+	if (!T) loadSamples();
 
 	// --- relay mode: messages and jobs from the server ---
 	var closed = false, lastMsg = null, lastJob = null, startRev = null, busySince = 0, firstSeq = null, jobsRun = 0;
 	function poll() {
 		if (!T || closed) return;
 		api("poll").then(function (r) { return r.ok ? r.json() : null; }).then(function (c) {
-			if (!c) { msg.textContent = "This session has ended or expired."; closed = true; return; }
+			if (!c) {
+				// The token is unknown or expired - typically one this tab kept
+				// from an earlier session (it is remembered per tab). Forget it
+				// and carry on as the standalone writer.
+				closed = true;
+				try { sessionStorage.removeItem("rxw.t"); } catch (e) {}
+				T = null;
+				outq = [];
+				$("manual").hidden = false;
+				var tp = $("tap"); if (tp) tp.remove();
+				msg.style.cssText = ""; document.title = "rx65n-web-writer";
+				msg.textContent = "The earlier session has ended; the page now works on its own.";
+				loadSamples();
+				return;
+			}
 			var done = c.state !== "open";
 			if (firstSeq === null) firstSeq = c.seq || 0;
 			// "Please reload" (askreload) applies only to a page loaded before
