@@ -1,5 +1,10 @@
 # rx65n-web-writer
 
+**▶ [Open the web page](https://paijp.github.io/rx65n-web-writer/)** -
+connect to the E2 Lite of an RX65N board (such as the RX65N Envision Kit)
+from Chrome or Edge, write a sample or your own `.mot`, and watch its serial
+output. Nothing to install.
+
 Write programs to an RX65N board (RX65N Envision Kit) through its on-board
 E2 emulator Lite, run them, and watch their serial output - from a browser
 tab, or from a Raspberry Pi.
@@ -19,7 +24,7 @@ recover from. Option-setting memory is never written by either tool.
 
 ## Web page
 
-Open the GitHub Pages site in Chrome (or Edge), connect the board with a USB
+Open <https://paijp.github.io/rx65n-web-writer/> in Chrome (or Edge), connect the board with a USB
 cable (on Android, through USB OTG), and:
 
 1. **Connect board** and pick the E2 Lite. The browser remembers it, so later
