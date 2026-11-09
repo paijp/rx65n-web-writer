@@ -34,27 +34,37 @@
 	var msg = document.getElementById("msg");
 	var app = document.getElementById("app");
 	app.innerHTML =
-		'<div class="row"><button id="conn" style="padding:10px 16px">Connect board</button></div>' +
-		'<p id="usb" style="margin:8px 0"></p>' +
+		// One block of controls, at most 26rem wide; the log below takes the width.
+		'<div class="blk"><div class="row after"><span id="usb" class="grow"></span>' +
+		'<button id="conn">Connect board</button></div>' +
 		// The manual controls are hidden in relay mode: the server drives the board.
 		'<div id="manual"' + (T ? ' hidden' : '') + '>' +
-		'<div class="row" id="samplerow" hidden><select id="sample"><option value="">Choose a sample…</option></select></div>' +
-		'<div class="row"><input type="file" id="file" accept=".mot,.srec,.s19,.s28,.s37,.txt"></div>' +
-		'<div class="row"><button id="write" disabled>Write &amp; run</button>' +
-		'<button id="run" disabled>Reset &amp; run</button>' +
-		'<button id="hold" disabled>Hold in reset</button></div>' +
-		'<div class="row"><input id="tx" placeholder="Text to send to the board (Enter sends it with a newline)" style="flex:1;min-width:10em">' +
-		'<button id="send" disabled>Send</button></div>' +
-		'<div class="row"><button id="clear">Clear log</button><button id="save">Save log</button></div></div>' +
+		'<div class="row"><button id="pickfile">Choose file</button>' +
+		'<input type="file" id="file" hidden accept=".mot,.srec,.s19,.s28,.s37,.txt">' +
+		'<span id="chosen" class="grow">No file chosen</span>' +
+		// The sample list: the phone's own picker, opened from the ▼ button.
+		'<span class="pick" id="samplerow" hidden><button tabindex="-1" aria-hidden="true">&#9660;</button>' +
+		'<select id="sample" aria-label="Samples"><option value="">Choose a sample…</option></select></span></div>' +
+		'<div class="row trio after"><button id="hold" disabled>Hold in reset</button>' +
+		'<button id="run" class="alt" disabled>Reset &amp; run</button>' +
+		'<button id="write" class="pri" disabled>Write &amp; run</button></div>' +
+		'<div class="row"><input type="text" id="tx" placeholder="Text to send to the board">' +
+		'<button id="send" disabled>Send</button></div></div></div>' +
 		'<pre id="log"></pre>' +
-		(T ? '<p id="tap" style="margin:8px 0;font-size:.9em;opacity:.8">Tap anywhere on the page once to get vibration alerts (when finished, etc.).</p>' : '') +
-		'<pre id="ev" style="opacity:.75"></pre>' +
+		'<div class="row end"><button id="clear">Clear</button><button id="save">Save</button></div>' +
+		(T ? '<p id="tap" style="font-size:.9em">Tap anywhere on the page once to get vibration alerts (when finished, etc.).</p>' : '') +
+		'<pre id="ev"></pre>' +
 		'<p class="note">本ソフトウェアはルネサス エレクトロニクスの公式ソフトウェアではなく、同社が認定、保証またはサポートするものではありません。' +
 		'This is not official Renesas Electronics software and is not certified, warranted or supported by Renesas Electronics.</p>';
 	function $(id) { return document.getElementById(id); }
 	var conn = $("conn"), usbP = $("usb"), logP = $("log"), evP = $("ev");
 	var btnWrite = $("write"), btnRun = $("run"), btnHold = $("hold"), btnSend = $("send");
-	msg.textContent = T ? "Connecting to the server…" : "Write an RX65N board from the browser (Chrome / Edge).";
+	// The standalone greeting, with the link to the notes and disclaimer.
+	function standaloneMsg() {
+		msg.innerHTML = 'Write an RX65N board from the browser (Chrome / Edge). ' +
+			'<a href="https://github.com/paijp/rx65n-web-writer#readme" target="_blank" rel="noopener">Before you use</a>';
+	}
+	if (T) msg.textContent = "Connecting to the server…"; else standaloneMsg();
 	if (T) document.addEventListener("pointerdown", function () {
 		var t = $("tap");
 		if (t) t.textContent = "Vibration alerts are on.";
@@ -547,12 +557,25 @@
 		}
 		return null;
 	}
-	$("sample").onchange = function () { if ($("sample").value) $("file").value = ""; };
-	$("file").onchange = function () { if ($("file").files[0]) $("sample").value = ""; };
+	// One choice at a time: a file or a sample, named next to the buttons.
+	$("pickfile").onclick = function () { $("file").click(); };
+	$("sample").onchange = function () {
+		var o = $("sample").selectedOptions[0];
+		if (!$("sample").value) return;
+		$("file").value = "";
+		$("chosen").textContent = $("sample").value + " (sample)";
+		$("chosen").title = o.textContent;
+	};
+	$("file").onchange = function () {
+		var f = $("file").files[0];
+		if (!f) return;
+		$("sample").value = "";
+		$("chosen").textContent = f.name; $("chosen").title = "";
+	};
 	btnWrite.onclick = function () {
 		manual(async function () {
 			var img = await pickedImage();
-			if (!img) { usbP.textContent = "Choose a sample or a .mot file."; return; }
+			if (!img) { usbP.textContent = "Choose a file or a sample (\u25bc) first."; return; }
 			await writeFlash(img.text, img.name, 115200);
 			await runBoard(115200, "write " + img.name + " " + new Date().toISOString());
 			usbP.textContent = "Written and running: " + img.name;
@@ -610,7 +633,7 @@
 				$("manual").hidden = false;
 				var tp = $("tap"); if (tp) tp.remove();
 				msg.style.cssText = ""; document.title = "rx65n-web-writer";
-				msg.textContent = "The earlier session has ended; the page now works on its own.";
+				standaloneMsg();
 				loadSamples();
 				return;
 			}
