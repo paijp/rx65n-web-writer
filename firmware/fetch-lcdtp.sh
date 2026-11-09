@@ -25,8 +25,9 @@
 set -euo pipefail
 
 REPO="${REPO:-paijp/smallest-touchpanel-ui}"
-# Override REF to build from another branch or tag.
-REF="${REF:-main}"
+# The RX65N port (with seriallog) is on this branch until it lands on main;
+# override REF to build from another branch or tag.
+REF="${REF:-claude/sweet-pascal-2dojav}"
 UPSTREAM="https://raw.githubusercontent.com/$REPO/$REF/rx65n"
 
 FILES="basic.h dbgcon.h debuglog.c debuglog.h envision_hw.c envision_hw.h
