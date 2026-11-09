@@ -44,8 +44,10 @@ the user only keeps the tab open.
 | `server.py` | server, `python:3.13-slim` in podman, stdlib only | relay: sessions, jobs, log/event upload, file download |
 | `rx65nctl` | server, as root | mint sessions, post jobs, read logs |
 | `nginx.conf` | server nginx | the `location /rx65n/` block |
+| `samples/` (optional) | server, next to the page | `index.json` and `.mot` files the page offers, as on the Pages site |
 
-Setup: put `index.html`, `app.js` and `server.py` in `/srv/rx65n/app/`, and
+Setup: put `index.html`, `app.js` and `server.py` in `/srv/rx65n/app/`
+(and optionally a `samples/` directory with `index.json` and `.mot` files), and
 `rx65nctl` in `/srv/rx65n/` (mode 700); add the nginx block; set `RXW_URL`
 (e.g. `https://example.com/rx65n/`) for `rx65nctl`. `RXW_DATA` (`/srv/rx65n`),
 `RXW_PORT` (5310) and `RXW_PREFIX` (`/rx65n`) can be changed the same way.
@@ -132,7 +134,8 @@ done; `rx65nctl new` and `jobwait` print a reminder. See ../CLAUDE.md.
   honoured after 2 minutes of busy.
 - The user agent string is not reliable (Android Chrome in desktop-site mode
   says `X11; Linux x86_64`); the `loaded` event also reports
-  `navigator.userAgentData` platform, version and model.
+  `navigator.userAgentData` platform, version and model - but in desktop-site
+  mode that says `Linux` too, with no model, so neither proves the device.
 
 ## Tested
 

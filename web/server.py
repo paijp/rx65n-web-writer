@@ -84,6 +84,17 @@ class H(BaseHTTPRequestHandler):
         if p == P + "/app.js":
             with open(os.path.join(DATA, "app", "app.js"), "rb") as f:
                 return self.send(200, f.read(), "text/javascript; charset=utf-8")
+        # Sample images next to the page (samples/index.json and the .mot
+        # files), public like the page itself; the GitHub Pages site has the
+        # same layout.
+        m = re.match("^" + re.escape(P) + r"/samples/([A-Za-z0-9._-]{1,80})$", p)
+        if m:
+            fp = os.path.join(DATA, "app", "samples", m.group(1))
+            if not os.path.isfile(fp):
+                return self.send(404, "not found")
+            ctype = "application/json" if fp.endswith(".json") else "application/octet-stream"
+            with open(fp, "rb") as f:
+                return self.send(200, f.read(), ctype)
         if p == P + "/api/poll":
             d = self.authed(closed_ok=True)
             if not d:
