@@ -19,7 +19,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -226,6 +226,37 @@ jobs:
           PY
           cp NOTICE site/NOTICE.txt
           ls -lR site
+
+      # The same images in rel/ of the repository, for anyone who wants the
+      # files rather than the page. Replaced in place on every build of main;
+      # the commit says which source commit they came from. [skip ci] keeps
+      # it from starting this workflow again.
+      - name: Publish to rel/
+        if: github.ref == 'refs/heads/main'
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: github-actions@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: github-actions@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          mkdir -p rel
+          cp firmware/out/*.mot rel/
+          git add rel
+          # Check that what was copied is staged (a .gitignore rule could
+          # silently keep it out), so "nothing to do" means nothing changed.
+          for f in rel/*.mot; do
+            git ls-files --error-unmatch "$f" >/dev/null 2>&1 || { echo "::error::$f not staged"; exit 1; }
+          done
+          if git diff --cached --quiet -- rel; then
+            echo "rel/ is already up to date"; exit 0
+          fi
+          git commit -m "rel: sample images from ${GITHUB_SHA:0:8} [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
 
       - uses: actions/upload-pages-artifact@v3
         with:
