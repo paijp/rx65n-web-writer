@@ -50,10 +50,10 @@
 		'<button id="write" class="pri" disabled>Write &amp; run</button></div>' +
 		'<div class="row"><input type="text" id="tx" placeholder="Text to send to the board">' +
 		'<button id="send" disabled>Send</button></div></div></div>' +
-		'<pre id="log"></pre>' +
+		'<div id="log"></div>' +
 		'<div class="row end"><button id="clear">Clear</button><button id="save">Save</button></div>' +
 		(T ? '<p id="tap" style="font-size:.9em">Tap anywhere on the page once to get vibration alerts (when finished, etc.).</p>' : '') +
-		'<pre id="ev"></pre>' +
+		'<div id="ev"></div>' +
 		'<p class="note">本ソフトウェアはルネサス エレクトロニクスの公式ソフトウェアではなく、同社が認定、保証またはサポートするものではありません。' +
 		'This is not official Renesas Electronics software and is not certified, warranted or supported by Renesas Electronics.</p>';
 	function $(id) { return document.getElementById(id); }

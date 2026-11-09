@@ -30,7 +30,9 @@
   .trio button { flex: 1; padding-inline: 6px; white-space: nowrap; }
   .pick { position: relative; }
   .pick select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
-  pre { font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  /* Plain blocks rather than <pre>, so a browser that reflows text on zoom
+     (Opera's desktop-site mode) reflows these too. */
+  #log, #ev { font-size: 12px; white-space: pre-wrap; word-break: break-all; }
   #log { margin: 12px 0 8px; max-height: 50vh; min-height: 6em; overflow: auto; padding: 10px; border-radius: 6px;
     background: var(--scr); color: var(--scr-fg); font-family: ui-monospace, Menlo, monospace; }
   .end { justify-content: flex-end; }
