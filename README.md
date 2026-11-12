@@ -82,7 +82,18 @@ It runs anywhere pyusb does (Linux on x86 or ARM).
 `firmware/` builds the sertest images (`src/sertest.c`) and sample1 with GCC
 for RX. `.github/workflows/pages.yml` builds binutils, GCC 16.1 and newlib for
 `rx-elf` (cached after the first run), builds the samples and publishes them
-with the page. To build locally with a toolchain on the PATH:
+with the page.
+
+To build the same toolchain by hand (Linux on x86_64 or ARM, such as a
+Raspberry Pi - there it takes an hour or more):
+
+```
+sudo apt install build-essential curl libgmp-dev libmpfr-dev libmpc-dev texinfo bison flex
+bash firmware/build-toolchain.sh          # installs to /opt/rx-elf (PREFIX=... to change)
+export PATH=/opt/rx-elf/bin:$PATH
+```
+
+Then build the samples:
 
 ```
 cd firmware

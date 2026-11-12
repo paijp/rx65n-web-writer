@@ -60,59 +60,8 @@ jobs:
 
       - name: Build binutils, gcc and newlib for rx-elf
         if: steps.toolchain-cache.outputs.cache-hit != 'true' || inputs.rebuild_toolchain
-        run: |
-          set -euo pipefail
-          sudo mkdir -p "$PREFIX"
-          sudo chown "$(id -u)" "$PREFIX"
-          mkdir -p ~/src && cd ~/src
-
-          curl -fsSLO "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS.tar.xz"
-          curl -fsSLO "https://ftp.gnu.org/gnu/gcc/gcc-$GCC/gcc-$GCC.tar.xz"
-          curl -fsSLO "https://sourceware.org/pub/newlib/newlib-$NEWLIB.tar.gz"
-          tar xf "binutils-$BINUTILS.tar.xz"
-          tar xf "gcc-$GCC.tar.xz"
-          tar xf "newlib-$NEWLIB.tar.gz"
-
-          mkdir -p build-binutils && cd build-binutils
-          "../binutils-$BINUTILS/configure" \
-            --target=rx-elf --prefix="$PREFIX" \
-            --disable-nls --disable-werror --with-sysroot
-          make -j"$(nproc)"
-          make install
-          cd ..
-
-          export PATH="$PREFIX/bin:$PATH"
-
-          # Newlib is here for its headers, not its code: the firmware is built
-          # -nostartfiles and calls no libc function, but it includes stdint.h,
-          # and a gcc built --without-headers has no libc stdint.h to offer. The
-          # alternative was to compile the firmware -ffreestanding so gcc serves
-          # its own; a complete toolchain was preferred, because it leaves how
-          # the image is built identical to the local GNURX one rather than
-          # changing it to suit CI.
-          #
-          # Hence the usual three-stage order: the compiler, then newlib with
-          # it, then libgcc against newlib's headers.
-          mkdir -p build-gcc && cd build-gcc
-          "../gcc-$GCC/configure" \
-            --target=rx-elf --prefix="$PREFIX" \
-            --enable-languages=c --with-newlib \
-            --disable-nls --disable-shared --disable-threads \
-            --disable-libssp --disable-libgomp --disable-libquadmath \
-            --disable-libatomic --disable-decimal-float --disable-libffi
-          make -j"$(nproc)" all-gcc
-          make install-gcc
-          cd ..
-
-          mkdir -p build-newlib && cd build-newlib
-          "../newlib-$NEWLIB/configure" --target=rx-elf --prefix="$PREFIX"
-          make -j"$(nproc)"
-          make install
-          cd ..
-
-          cd build-gcc
-          make -j"$(nproc)" all-target-libgcc
-          make install-target-libgcc
+        # The same script builds it by hand (firmware/build-toolchain.sh).
+        run: SRC=~/src bash firmware/build-toolchain.sh
 
       - name: Save the toolchain
         if: always() && steps.toolchain-cache.outputs.cache-hit != 'true'
